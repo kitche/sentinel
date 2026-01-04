@@ -1,0 +1,63 @@
+[package]
+name = "webserver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server and client
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+
+# HTTP/2 support
+h2 = "0.4"
+
+# HTTP/3 support (QUIC) - Currently disabled due to compatibility issues
+# Uncomment and adjust versions when implementing HTTP/3
+ h3 = "0.0.4"
+ h3-quinn = "0.0.4"
+ quinn = "0.10"
+
+# TLS support
+rustls = "0.23"
+tokio-rustls = "0.26"
+rcgen = "0.13"
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+chrono = { version = "0.4", features = ["serde"] }
+# Lua for WAF (optional, uncomment when implementing WAF)
+# mlua = { version = "0.9", features = ["lua54", "async", "send"] }
+
+# FastCGI for PHP (optional, uncomment when implementing PHP)
+# tokio-fastcgi = "0.1"
+
+# Logging and tracing (recommended additions)
+# tracing = "0.1"
+# tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling (recommended)
+# anyhow = "1.0"
+# thiserror = "1.0"
+
+[dev-dependencies]
+# Testing utilities
+tokio-test = "0.4"
+# For integration tests
+reqwest = { version = "0.12", features = ["rustls-tls"] }
+
+[profile.release]
+# Optimize for performance
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+# Faster compilation in dev
+opt-level = 0
