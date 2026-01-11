@@ -177,61 +177,69 @@ impl WebServer {
     }
 
     async fn run_http1_http2(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let addr: SocketAddr = format!("{}:{}", 
-            self.config.server.host, 
-            self.config.server.http2_port.unwrap_or(self.config.server.port)
-        ).parse()?;
-
-        let listener = TcpListener::bind(addr).await?;
+    let addr: SocketAddr = format!("{}:{}",
+        self.config.server.host,
+        self.config.server.http2_port.unwrap_or(self.config.server.port)
+    ).parse()?;
+    
+    let listener = TcpListener::bind(addr).await?;
+    println!("🚀 Server running on {}", addr);
+    self.print_server_info();
+    
+    loop {
+        // Handle connection accept errors gracefully
+        let (stream, remote_addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                // Log the error but don't crash the server
+                eprintln!("Failed to accept connection: {} (continuing...)", e);
+                continue;
+            }
+        };
         
-        println!("🚀 Server running on {}", addr);
-        self.print_server_info();
-
-        loop {
-            let (stream, remote_addr) = listener.accept().await?;
-            let server = Arc::new(self.clone_refs());
-
-            tokio::spawn(async move {
-                if let Some(ref acceptor) = server.tls_acceptor {
-                    match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
-                            let protocol = {
-                                let (_, session) = tls_stream.get_ref();
-                                session.alpn_protocol()
-                                    .and_then(|p| std::str::from_utf8(p).ok())
-                                    .map(|s| s.to_string())
-                            };
-
-                            let io = TokioIo::new(tls_stream);
-                            
-                            match protocol.as_deref() {
-                                Some("h2") => {
-                                    println!("HTTP/2 from {}", remote_addr);
-                                    let _ = crate::protocol::http2::serve_connection(
-                                        io, server, remote_addr
-                                    ).await;
-                                }
-                                _ => {
-                                    println!("HTTP/1.1 from {}", remote_addr);
-                                    let _ = crate::protocol::http1::serve_connection(
-                                        io, server, remote_addr
-                                    ).await;
-                                }
+        let server = Arc::new(self.clone_refs());
+        
+        tokio::spawn(async move {
+            if let Some(ref acceptor) = server.tls_acceptor {
+                match acceptor.accept(stream).await {
+                    Ok(tls_stream) => {
+                        let protocol = {
+                            let (_, session) = tls_stream.get_ref();
+                            session.alpn_protocol()
+                                .and_then(|p| std::str::from_utf8(p).ok())
+                                .map(|s| s.to_string())
+                        };
+                        
+                        let io = TokioIo::new(tls_stream);
+                        
+                        match protocol.as_deref() {
+                            Some("h2") => {
+                                println!("HTTP/2 from {}", remote_addr);
+                                let _ = crate::protocol::http2::serve_connection(
+                                    io, server, remote_addr
+                                ).await;
+                            }
+                            _ => {
+                                println!("HTTP/1.1 from {}", remote_addr);
+                                let _ = crate::protocol::http1::serve_connection(
+                                    io, server, remote_addr
+                                ).await;
                             }
                         }
-                        Err(e) => {
-                            eprintln!("TLS error: {}", e);
-                        }
                     }
-                } else {
-                    let io = TokioIo::new(stream);
-                    let _ = crate::protocol::http1::serve_connection(
-                        io, server, remote_addr
-                    ).await;
+                    Err(e) => {
+                        eprintln!("TLS error from {}: {}", remote_addr, e);
+                    }
                 }
-            });
-        }
+            } else {
+                let io = TokioIo::new(stream);
+                let _ = crate::protocol::http1::serve_connection(
+                    io, server, remote_addr
+                ).await;
+            }
+        });
     }
+}
 
     fn clone_refs(&self) -> Self {
         Self {
