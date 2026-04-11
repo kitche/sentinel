@@ -1,4 +1,3 @@
 pub mod fastcgi;
 
-pub use fastcgi::FastCgiClient;
-
+pub use fastcgi::{FastCgiClient, FastCgiResponse};
