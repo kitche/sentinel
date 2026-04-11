@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::net::{SocketAddr, IpAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use hyper::{Request, Response, body::Incoming, Method, StatusCode};
@@ -481,6 +482,81 @@ impl WebServer {
         self.handle_not_found(ip).await
     }
 
+    fn guess_content_type(path: &Path) -> &'static str {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("html") | Some("htm") => "text/html; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("js") => "application/javascript; charset=utf-8",
+            Some("json") => "application/json; charset=utf-8",
+            Some("txt") => "text/plain; charset=utf-8",
+            Some("xml") => "application/xml; charset=utf-8",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("ico") => "image/x-icon",
+            Some("pdf") => "application/pdf",
+            _ => "application/octet-stream",
+        }
+    }
+
+    fn resolve_static_path(document_root: &str, request_path: &str) -> Option<PathBuf> {
+        let relative = request_path.trim_start_matches('/');
+        let requested = if relative.is_empty() {
+            PathBuf::from("index.html")
+        } else {
+            PathBuf::from(relative)
+        };
+
+        if requested
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return None;
+        }
+
+        let mut full_path = Path::new(document_root).join(requested);
+        if full_path.is_dir() {
+            full_path = full_path.join("index.html");
+        }
+        Some(full_path)
+    }
+
+    async fn handle_static_from_root(
+        &self,
+        request_path: &str,
+        document_root: &str,
+        ip: IpAddr,
+    ) -> Response<BoxBody<Bytes, Infallible>> {
+        let Some(file_path) = Self::resolve_static_path(document_root, request_path) else {
+            return self.handle_not_found(ip).await;
+        };
+
+        match tokio::fs::read(&file_path).await {
+            Ok(content) => {
+                let content_type = Self::guess_content_type(&file_path);
+                let mut response = Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", content_type)
+                    .body(Full::new(Bytes::from(content)).boxed())
+                    .unwrap();
+                self.add_server_header(&mut response);
+                response
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.handle_not_found(ip).await,
+            Err(e) => {
+                eprintln!("❌ Failed to read static file '{}': {}", file_path.display(), e);
+                let mut response = Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::new(Bytes::from("Internal Server Error")).boxed())
+                    .unwrap();
+                self.add_server_header(&mut response);
+                response
+            }
+        }
+    }
+
     fn add_server_header(&self, response: &mut Response<BoxBody<Bytes, Infallible>>) {
         if !self.config.server.hide_server_header {
             if let Ok(hv) = hyper::header::HeaderValue::from_str(
@@ -556,9 +632,11 @@ impl RequestHandler for WebServer {
                 }
                 // Serve static files from vhost document root
                 _ if vhost.document_root.is_some() => {
-                    // TODO: Implement static file serving
-                    // For now, return 404
-                    self.handle_not_found(ip).await
+                    if let Some(document_root) = &vhost.document_root {
+                        self.handle_static_from_root(&uri_path, document_root, ip).await
+                    } else {
+                        self.handle_not_found(ip).await
+                    }
                 }
                 _ => {
                     self.handle_not_found(ip).await
