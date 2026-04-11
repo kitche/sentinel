@@ -228,7 +228,15 @@ impl WebServer {
                         }
                     }
                     Err(e) => {
-                        eprintln!("TLS error from {}: {}", remote_addr, e);
+                        let err_text = e.to_string();
+                        if err_text.contains("InvalidContentType") {
+                            eprintln!(
+                                "⚠️  Rejected non-TLS traffic on TLS listener from {}",
+                                remote_addr
+                            );
+                        } else {
+                            eprintln!("TLS error from {}: {}", remote_addr, e);
+                        }
                     }
                 }
             } else {
