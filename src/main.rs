@@ -4,14 +4,28 @@ use std::error::Error;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
 
-    if args.len() > 1 && args[1] == "--generate-config" {
+    // Accept wrapper-style invocations such as:
+    //   webserver run -- --generate-config
+    //   webserver run -- config.yaml
+    if args.first().map(|arg| arg.as_str()) == Some("run") {
+        args.remove(0);
+        if args.first().map(|arg| arg.as_str()) == Some("--") {
+            args.remove(0);
+        }
+    }
+
+    if args.iter().any(|arg| arg == "--generate-config") {
         println!("{}", Config::example_config());
         return Ok(());
     }
 
-    let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("config.yaml");
+    let config_path = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(|arg| arg.as_str())
+        .unwrap_or("config.yaml");
 
     let config = match Config::load_from_file(config_path) {
         Ok(c) => {
