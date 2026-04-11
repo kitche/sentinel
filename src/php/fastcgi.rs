@@ -71,7 +71,15 @@ impl FastCgiClient {
 
         params.insert("GATEWAY_INTERFACE".to_string(), "CGI/1.1".to_string());
         params.insert("SERVER_SOFTWARE".to_string(), "RustWebServer/1.0".to_string());
-        params.insert("SERVER_PROTOCOL".to_string(), format!("{:?}", req.version()));
+        let server_protocol = match req.version() {
+            hyper::Version::HTTP_09 => "HTTP/0.9",
+            hyper::Version::HTTP_10 => "HTTP/1.0",
+            hyper::Version::HTTP_11 => "HTTP/1.1",
+            hyper::Version::HTTP_2 => "HTTP/2",
+            hyper::Version::HTTP_3 => "HTTP/3",
+            _ => "HTTP/1.1",
+        };
+        params.insert("SERVER_PROTOCOL".to_string(), server_protocol.to_string());
         
         params.insert("REQUEST_METHOD".to_string(), req.method().to_string());
         params.insert("REQUEST_URI".to_string(), req.uri().to_string());
@@ -85,12 +93,20 @@ impl FastCgiClient {
         params.insert("REMOTE_ADDR".to_string(), remote_addr.to_string());
         params.insert("REMOTE_PORT".to_string(), "0".to_string());
         
-        params.insert("SERVER_NAME".to_string(), 
-            req.headers().get("host")
-                .and_then(|h| h.to_str().ok())
-                .unwrap_or("localhost")
-                .to_string());
-        params.insert("SERVER_PORT".to_string(), "80".to_string());
+        let host = req
+            .headers()
+            .get("host")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("localhost");
+        let (server_name, server_port) = host
+            .split_once(':')
+            .map(|(name, port)| (name.to_string(), port.to_string()))
+            .unwrap_or_else(|| (host.to_string(), "80".to_string()));
+
+        params.insert("SERVER_NAME".to_string(), server_name);
+        params.insert("SERVER_PORT".to_string(), server_port);
+        params.insert("REQUEST_SCHEME".to_string(), "http".to_string());
+        params.insert("HTTPS".to_string(), "off".to_string());
         
         if let Some(content_type) = req.headers().get("content-type") {
             params.insert("CONTENT_TYPE".to_string(), 
@@ -246,10 +262,6 @@ impl FastCgiClient {
             let content_len = u16::from_be_bytes([header[4], header[5]]) as usize;
             let padding_len = header[6] as usize;
 
-            if version != FCGI_VERSION_1 || rec_request_id != request_id {
-                continue;
-            }
-
             let mut content = vec![0u8; content_len];
             if content_len > 0 {
                 stream.read_exact(&mut content).await
@@ -260,6 +272,10 @@ impl FastCgiClient {
                 let mut padding = vec![0u8; padding_len];
                 stream.read_exact(&mut padding).await
                     .map_err(|e| format!("Read error: {}", e))?;
+            }
+
+            if version != FCGI_VERSION_1 || rec_request_id != request_id {
+                continue;
             }
 
             match record_type {
@@ -287,19 +303,23 @@ impl FastCgiClient {
         let response_str = String::from_utf8_lossy(&stdout);
         let stderr_str = String::from_utf8_lossy(&stderr).to_string();
 
-        let parts: Vec<&str> = response_str.splitn(2, "\r\n\r\n").collect();
-        if parts.len() < 2 {
+        let (headers_str, body_str) = if let Some((headers, body)) = response_str.split_once("\r\n\r\n") {
+            (headers, body)
+        } else if let Some((headers, body)) = response_str.split_once("\n\n") {
+            (headers, body)
+        } else {
             return Err("Invalid FastCGI response".to_string());
-        }
+        };
 
-        let headers_str = parts[0];
-        let body = parts[1].as_bytes().to_vec();
+        let body = body_str.as_bytes().to_vec();
 
         let mut headers = HashMap::new();
         let mut status = 200u16;
 
         for line in headers_str.lines() {
-            if let Some((key, value)) = line.split_once(": ") {
+            if let Some((key, value)) = line.split_once(':') {
+                let key = key.trim();
+                let value = value.trim();
                 if key.eq_ignore_ascii_case("status") {
                     if let Some(code_str) = value.split_whitespace().next() {
                         status = code_str.parse().unwrap_or(200);

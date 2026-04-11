@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::{error::Error, io};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
@@ -139,29 +140,87 @@ pub struct VirtualHostProxy {
 }
 
 // Default functions
-fn default_worker_threads() -> usize { 4 }
-fn default_max_connections() -> usize { 10000 }
-fn default_true() -> bool { true }
-fn default_timeout() -> u64 { 30 }
-fn default_pool_size() -> usize { 10 }
-fn default_weight() -> u32 { 1 }
-fn default_fastcgi_addr() -> String { "127.0.0.1:9000".to_string() }
-fn default_doc_root() -> String { "/var/www/html".to_string() }
-fn default_php_timeout() -> u64 { 60 }
-fn default_server_name() -> String { "RustWebServer/1.0".to_string() }
-fn default_404_threshold() -> u32 { 10 }
-fn default_404_window() -> u64 { 60 }
-fn default_pf_table() -> String { "webserver_blocklist".to_string() }
-fn default_log_path() -> String { "/var/log/webserver/access.log".to_string() }
-fn default_log_format() -> String { "combined".to_string() }
+fn default_worker_threads() -> usize {
+    4
+}
+fn default_max_connections() -> usize {
+    10000
+}
+fn default_true() -> bool {
+    true
+}
+fn default_timeout() -> u64 {
+    30
+}
+fn default_pool_size() -> usize {
+    10
+}
+fn default_weight() -> u32 {
+    1
+}
+fn default_fastcgi_addr() -> String {
+    "127.0.0.1:9000".to_string()
+}
+fn default_doc_root() -> String {
+    "/var/www/html".to_string()
+}
+fn default_php_timeout() -> u64 {
+    60
+}
+fn default_server_name() -> String {
+    "RustWebServer/1.0".to_string()
+}
+fn default_404_threshold() -> u32 {
+    10
+}
+fn default_404_window() -> u64 {
+    60
+}
+fn default_pf_table() -> String {
+    "webserver_blocklist".to_string()
+}
+fn default_log_path() -> String {
+    "/var/log/webserver/access.log".to_string()
+}
+fn default_log_format() -> String {
+    "combined".to_string()
+}
 fn default_protocols() -> Vec<HttpProtocol> {
     vec![HttpProtocol::Http1, HttpProtocol::Http2]
 }
 
 impl Config {
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
         let content = std::fs::read_to_string(path)?;
-        Ok(serde_yaml::from_str(&content)?)
+        match serde_yaml::from_str::<Self>(&content) {
+            Ok(config) => Ok(config),
+            Err(err) => {
+                let mut message = format!("YAML parse error: {}", err);
+
+                if let Some(location) = err.location() {
+                    let line_number = location.line();
+                    if let Some(line) = content.lines().nth(line_number.saturating_sub(1)) {
+                        message.push_str(&format!(
+                            "\n  at line {}: {}",
+                            line_number,
+                            line.trim_end()
+                        ));
+                    }
+                }
+
+                let raw = err.to_string();
+                if raw.contains("mapping values are not allowed in this context") {
+                    message.push_str(
+                        "\n💡 Hint: check indentation in `vhosts:` entries. Each virtual host must start with `-` at the same level, and keys like `aliases`, `document_root`, `proxy`, and `php` must align under that same `-` entry.",
+                    );
+                }
+
+                Err(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    message,
+                )))
+            }
+        }
     }
 
     pub fn example_config() -> String {
@@ -182,23 +241,19 @@ impl Config {
                 enable_http2: true,
             }),
             proxy: Some(ProxySettings {
-                backends: vec![
-                    BackendConfig {
-                        name: "backend1".to_string(),
-                        url: "http://localhost:3000".to_string(),
-                        weight: 1,
-                        enabled: true,
-                    },
-                ],
+                backends: vec![BackendConfig {
+                    name: "backend1".to_string(),
+                    url: "http://localhost:3000".to_string(),
+                    weight: 1,
+                    enabled: true,
+                }],
                 timeout_seconds: 30,
                 pool_max_idle_per_host: 10,
-                routes: vec![
-                    ProxyRoute {
-                        path_prefix: "/api/".to_string(),
-                        backend: "backend1".to_string(),
-                        strip_prefix: false,
-                    },
-                ],
+                routes: vec![ProxyRoute {
+                    path_prefix: "/api/".to_string(),
+                    backend: "backend1".to_string(),
+                    strip_prefix: false,
+                }],
             }),
             php: Some(PhpConfig {
                 fastcgi_addr: "127.0.0.1:9000".to_string(),
@@ -236,6 +291,24 @@ impl Config {
                         extensions: vec![".php".to_string()],
                         timeout_seconds: 60,
                     }),
+                    enabled: true,
+                },
+                VirtualHost {
+                    server_name: vec![
+                        "app.example.com".to_string(),
+                        "www.app.example.com".to_string(),
+                    ],
+                    aliases: vec![],
+                    document_root: None,
+                    proxy: Some(VirtualHostProxy {
+                        backend: "backend1".to_string(),
+                        routes: vec![ProxyRoute {
+                            path_prefix: "/".to_string(),
+                            backend: "backend1".to_string(),
+                            strip_prefix: false,
+                        }],
+                    }),
+                    php: None,
                     enabled: true,
                 },
             ]),
